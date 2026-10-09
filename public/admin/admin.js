@@ -693,9 +693,9 @@ form.addEventListener(
 
 
             showToast(
-                editId
+                (editId
                     ? "Publication modifiée."
-                    : "Publication créée."
+                    : "Publication créée.") + socialSummary(data.social)
             );
 
 
@@ -1054,3 +1054,28 @@ function showToast(message) {
 // ======================================
 // Le chargement des publications est déclenché par checkSession()
 // une fois la session admin confirmée (voir showAdmin() plus haut).
+
+// Résumé de l'envoi vers les réseaux sociaux
+function socialSummary(result) {
+    if (!result) return "";
+    const names = { facebook: "Facebook", instagram: "Instagram" };
+    return " " + Object.entries(result).map(([k, v]) =>
+        v.ok ? `✓ ${names[k]} publié.` : `⚠ ${names[k]} : ${v.error}`).join(" ");
+}
+
+// Grise les réseaux non configurés sur le serveur
+(async function checkSocial() {
+    try {
+        const r = await fetch(`${API_URL}/admin/social/status`, { credentials: "include" });
+        const d = await r.json();
+        if (!d.success) return;
+        [["shareFacebook", "facebook"], ["shareInstagram", "instagram"]].forEach(([id, key]) => {
+            const box = document.getElementById(id);
+            if (box && !d.networks[key]) {
+                box.disabled = true;
+                box.parentElement.classList.add("is-off");
+                box.parentElement.title = "Non configuré : voir GUIDE-RESEAUX-SOCIAUX.md";
+            }
+        });
+    } catch (e) { /* hors connexion : on laisse les cases actives */ }
+})();

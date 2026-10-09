@@ -4,6 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex, nofollow">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="icon" href="/favicon-16.png" type="image/png" sizes="16x16">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
 <title>Administration | RECTOY-AIRES</title>
 <link rel="stylesheet" href="admin.css">
 </head>
@@ -30,7 +36,7 @@
       <button class="nav-item" data-section="publications">📰 <span>Publications</span></button>
       <button class="nav-item" data-section="create">➕ <span>Nouvelle publication</span></button>
     </nav>
-    <div class="sidebar-bottom"><a href="/" target="_blank" rel="noopener">🌐 Voir le site</a></div>
+    <div class="sidebar-bottom"><a href="magazine.html">📖 Magazine</a><a href="videos.html">🎬 Vidéos</a><a href="social.html">🔗 Réseaux</a><a href="conseiller.html">💬 Conseiller</a><a href="/" target="_blank" rel="noopener">🌐 Voir le site</a></div>
   </aside>
 
   <main class="main-content">
@@ -53,6 +59,8 @@
             <button type="button" data-create-type="annonce">📢 Nouvelle annonce</button>
             <button type="button" data-create-type="evenement">📅 Nouvel événement</button>
             <button type="button" data-create-type="publicite">🎯 Nouvelle publicité</button>
+            <a href="videos.html?new=publicite">🎬 Nouvelle publicité vidéo</a>
+            <a href="videos.html?new=reportage">📹 Nouveau reportage vidéo</a>
           </div></div>
       </div>
     </section>
@@ -84,6 +92,13 @@
             <div class="form-group full"><label for="link">Lien (optionnel)</label><input type="url" id="link" name="link" placeholder="https://..."></div>
             <div class="form-group full"><label for="image">Image</label><input type="file" id="image" name="image" accept="image/jpeg,image/png,image/webp"><small>JPG, PNG ou WEBP — 5 Mo maximum. En modification, laissez vide pour garder l'image actuelle.</small></div>
             <div class="form-group full"><label for="description">Description *</label><textarea id="description" name="description" rows="6" required></textarea></div>
+            <div class="form-group full social-share"><label>Publier aussi sur nos pages</label>
+  <div class="share-options">
+    <label><input type="checkbox" id="shareFacebook" name="shareFacebook"> <span>Facebook</span></label>
+    <label><input type="checkbox" id="shareInstagram" name="shareInstagram"> <span>Instagram</span></label>
+  </div>
+  <small id="shareHint">L'envoi se fait à l'enregistrement, uniquement si le statut est « Publié ». Instagram exige une image.</small></div>
+
           </div>
           <div class="form-actions"><button class="secondary-btn" id="cancelForm" type="button">Annuler</button><button class="primary-btn" type="submit">Enregistrer</button></div>
         </form>

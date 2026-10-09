@@ -616,3 +616,37 @@ button {
     }
 
 }
+
+/* Publication sur les réseaux sociaux */
+.share-options{display:flex;gap:18px;flex-wrap:wrap}
+.share-options label{display:flex;align-items:center;gap:8px;font-weight:600;cursor:pointer}
+.share-options input{width:auto}
+.social-share small{color:#8793a3}
+.share-options label.is-off{opacity:.45;cursor:not-allowed}
+
+/* ---------- Barre de navigation commune (pages Magazine, Vidéos, Conseiller) ---------- */
+.adminbar { display: flex; flex-wrap: wrap; gap: 6px; max-width: 1000px; margin: 0 auto; padding: 14px 20px 0; }
+.adminbar a { padding: 9px 15px; border-radius: 10px; color: #344054; font-weight: 700; font-size: .9rem; text-decoration: none; background: #fff; border: 1px solid #e4e9ef; }
+.adminbar a:hover { background: #eef6fd; }
+.adminbar a.is-active { color: #fff; background: #0b6bcb; border-color: #0b6bcb; }
+.adminbar .adminbar-site { margin-left: auto; }
+.quick-actions a { display: block; padding: 14px; border-radius: 12px; text-align: left; font-weight: 700; color: inherit; text-decoration: none; border: 1px solid #e4e9ef; background: #fff; }
+.quick-actions a:hover { background: #eef6fd; }
+
+/* ---------- Vidéos ---------- */
+.vid-row { display: grid; grid-template-columns: 96px 1fr auto; gap: 14px; align-items: center; border-bottom: 1px solid #edf0f4; padding: 14px 0; }
+.vid-row:last-child { border-bottom: 0; }
+.vid-thumb { width: 96px; height: 56px; border-radius: 8px; background: #0b2440 center/cover no-repeat; display: grid; place-items: center; color: #fff; font-size: 1.3rem; }
+.vid-meta small { color: #667085; }
+.badge.kind-publicite { background: #fdebdc; color: #a2430d; }
+.badge.kind-reportage { background: #dcecfb; color: #0b4f8a; }
+.badge.kind-presentation { background: #e9e1fb; color: #4a2bb0; }
+.src-choice { display: flex; gap: 18px; flex-wrap: wrap; }
+.src-choice label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.src-choice input { width: auto; }
+.progress { height: 10px; border-radius: 6px; background: #e4e9ef; overflow: hidden; margin-top: 8px; }
+.progress span { display: block; height: 100%; width: 0; background: linear-gradient(135deg, #12c9b0, #1f7ae0 60%, #6a3df0); transition: width .2s; }
+.vid-tip { background: #f1f7fd; border: 1px solid #d6e9f8; border-radius: 10px; padding: 12px 14px; font-size: .86rem; color: #254a6b; line-height: 1.55; }
+@media (max-width: 700px) { .vid-row { grid-template-columns: 80px 1fr; } .vid-row .row-actions { grid-column: 1 / -1; } .vid-thumb { width: 80px; } }
+.row-actions .row-link { display: inline-block; padding: 7px 11px; border-radius: 8px; border: 1px solid #e4e9ef; background: #fff; color: inherit; font-size: .85rem; text-decoration: none; }
+.row-actions .row-link:hover { background: #eef6fd; }
