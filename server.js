@@ -1,153 +1,216 @@
-const path = require("path");
-
-// On charge le .env qui se trouve dans CE dossier (backend/),
-// peu importe le dossier depuis lequel la commande a été lancée
-// (VS Code, un terminal, un script npm...).
-require("dotenv").config({
-    path: path.join(__dirname, ".env")
-});
+require("dotenv").config();
 
 const express = require("express");
+const path = require("path");
 const cors = require("cors");
 const session = require("express-session");
+const pgSession = require("connect-pg-simple")(session);
 const bcrypt = require("bcryptjs");
 const multer = require("multer");
-const fs = require("fs");
+
+const { pool, query } = require("./src/config/database");
+const { migrate } = require("./src/config/migrate");
 
 const app = express();
 
-const PORT = process.env.PORT || 4000;
+const PORT = Number(process.env.PORT || 4000);
+const IS_PROD = process.env.NODE_ENV === "production";
 
-const DATA_FILE = path.join(
-    __dirname,
-    "data",
-    "publications.json"
-);
+/* =========================================================
+   CONFIGURATION
+========================================================= */
 
-const UPLOADS_DIR = path.join(
-    __dirname,
-    "uploads"
-);
-
-
-// ================================
-// VARIABLES D'ENVIRONNEMENT REQUISES
-// ================================
-// Voir .env.example pour la liste complète.
-// Le serveur refuse de démarrer si les secrets essentiels manquent,
-// pour éviter de tourner "par accident" avec des valeurs par défaut faibles.
-
-const REQUIRED_ENV = [
-    "SESSION_SECRET",
-    "ADMIN_USERNAME",
-    "ADMIN_PASSWORD_HASH"
-];
-
-const missingEnv = REQUIRED_ENV.filter(key => !process.env[key]);
-
-if (missingEnv.length) {
-
-    console.error(
-        "Variables d'environnement manquantes : " +
-        missingEnv.join(", ")
-    );
-
-    console.error(
-        "Le serveur cherche le fichier .env ici : " +
-        path.join(__dirname, ".env")
-    );
-
-    console.error(
-        "Vérifiez qu'il existe bien à cet endroit exact et que les 3 valeurs y sont renseignées."
-    );
-
+if (!process.env.SESSION_SECRET) {
+    console.error("ERREUR : SESSION_SECRET est manquant.");
     process.exit(1);
-
 }
 
+if (!process.env.ADMIN_USERNAME) {
+    console.error("ERREUR : ADMIN_USERNAME est manquant.");
+    process.exit(1);
+}
 
-// ================================
-// DOSSIERS OBLIGATOIRES
-// ================================
-// Evite un crash au premier upload / à la première écriture
-// si "data/" ou "uploads/" n'existent pas encore.
+if (!process.env.ADMIN_PASSWORD_HASH) {
+    console.error("ERREUR : ADMIN_PASSWORD_HASH est manquant.");
+    process.exit(1);
+}
 
-fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+/* =========================================================
+   CORS
+========================================================= */
 
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map(origin => origin.trim())
+    .filter(Boolean);
 
-// ================================
-// CONFIGURATION
-// ================================
+app.use(
+    cors({
+        origin(origin, callback) {
+            if (!origin) {
+                return callback(null, true);
+            }
 
-const allowedOrigins =
-    (process.env.ALLOWED_ORIGINS || "")
-        .split(",")
-        .map(origin => origin.trim())
-        .filter(Boolean);
+            if (
+                allowedOrigins.length === 0 ||
+                allowedOrigins.includes(origin)
+            ) {
+                return callback(null, true);
+            }
 
-app.use(cors({
+            return callback(
+                new Error("Origine non autorisée par CORS.")
+            );
+        },
+        credentials: true
+    })
+);
 
-    origin: function (origin, callback) {
+/* =========================================================
+   PROXY
+========================================================= */
 
-        // Requêtes sans en-tête Origin (ex. Postman, curl) : autorisées.
-        if (!origin) return callback(null, true);
+if (IS_PROD) {
+    app.set("trust proxy", 1);
+}
 
-        if (allowedOrigins.includes(origin)) {
-            return callback(null, true);
+/* =========================================================
+   HEADERS DE SÉCURITÉ
+========================================================= */
+
+app.disable("x-powered-by");
+
+app.use((req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "SAMEORIGIN");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader(
+        "Permissions-Policy",
+        "geolocation=(), microphone=(), camera=()"
+    );
+
+    next();
+});
+
+/* =========================================================
+   BODY PARSER
+========================================================= */
+
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
+
+/* =========================================================
+   SESSION POSTGRESQL
+========================================================= */
+
+app.use(
+    session({
+        store: new pgSession({
+            pool,
+            tableName: "session"
+        }),
+
+        name: "rectoy.sid",
+
+        secret: process.env.SESSION_SECRET,
+
+        resave: false,
+
+        saveUninitialized: false,
+
+        cookie: {
+            httpOnly: true,
+            sameSite: "lax",
+            secure: IS_PROD,
+            maxAge: 1000 * 60 * 60 * 8
         }
+    })
+);
 
-        return callback(new Error("Origine non autorisée par CORS."));
+/* =========================================================
+   FICHIERS STATIQUES
+========================================================= */
 
-    },
+const publicDirectory = path.join(__dirname, "public");
 
-    credentials: true
+app.use(express.static(publicDirectory));
 
-}));
+/*
+   Routes explicites de l'administration.
+   Elles évitent les problèmes de résolution /admin.
+*/
 
-app.use(express.json());
+app.get("/admin", (req, res) => {
+    res.sendFile(
+        path.join(publicDirectory, "admin", "index.html")
+    );
+});
 
-app.use(express.urlencoded({
-    extended: true
-}));
+app.get("/admin/", (req, res) => {
+    res.sendFile(
+        path.join(publicDirectory, "admin", "index.html")
+    );
+});
 
-app.set("trust proxy", 1);
+app.get("/admin/admin.css", (req, res) => {
+    res.sendFile(
+        path.join(publicDirectory, "admin", "admin.css")
+    );
+});
 
-app.use(session({
+app.get("/admin/admin.js", (req, res) => {
+    res.sendFile(
+        path.join(publicDirectory, "admin", "admin.js")
+    );
+});
 
-    name: "rectoy.sid",
+/* =========================================================
+   HEALTH CHECK
+========================================================= */
 
-    secret: process.env.SESSION_SECRET,
+app.get("/healthz", async (req, res) => {
+    try {
+        await query("SELECT 1");
 
-    resave: false,
-
-    saveUninitialized: false,
-
-    cookie: {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
-        maxAge: 1000 * 60 * 60 * 8 // 8 heures
+        res.json({
+            success: true,
+            status: "ok",
+            service: "RECTOY-AIRES",
+            database: "connected",
+            time: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(503).json({
+            success: false,
+            status: "error",
+            database: "unavailable",
+            message: error.message
+        });
     }
+});
 
-}));
+/* =========================================================
+   API PRINCIPALE
+========================================================= */
 
+app.get("/api", (req, res) => {
+    res.json({
+        success: true,
+        name: "RECTOY-AIRES API",
+        version: "1.0.0",
+        status: "online"
+    });
+});
 
-// Images envoyées par l'admin
-app.use("/uploads", express.static(UPLOADS_DIR));
-
-// Site public + administration (/admin/) servis par le même serveur :
-// même domaine => pas de problème de CORS ni de cookies.
-app.use(express.static(path.join(__dirname, "public")));
-
-
-// ================================
-// AUTHENTIFICATION ADMIN
-// ================================
+/* =========================================================
+   AUTHENTIFICATION ADMIN
+========================================================= */
 
 function requireAuth(req, res, next) {
-
-    if (req.session && req.session.isAdmin) {
+    if (
+        req.session &&
+        req.session.isAdmin === true
+    ) {
         return next();
     }
 
@@ -155,314 +218,464 @@ function requireAuth(req, res, next) {
         success: false,
         message: "Authentification requise."
     });
-
 }
 
-const loginAttempts = new Map();
-const MAX_ATTEMPTS = 5;
-const WINDOW_MS = 15 * 60 * 1000;
-
-function isRateLimited(key) {
-
-    const entry = loginAttempts.get(key);
-
-    if (!entry) return false;
-
-    if (Date.now() - entry.firstAttempt > WINDOW_MS) {
-        loginAttempts.delete(key);
-        return false;
-    }
-
-    return entry.count >= MAX_ATTEMPTS;
-
-}
-
-function registerFailedAttempt(key) {
-
-    const entry = loginAttempts.get(key);
-
-    if (!entry || Date.now() - entry.firstAttempt > WINDOW_MS) {
-        loginAttempts.set(key, { count: 1, firstAttempt: Date.now() });
-        return;
-    }
-
-    entry.count += 1;
-
-}
-
+/* =========================================================
+   LOGIN ADMIN
+========================================================= */
 
 app.post("/api/admin/login", async (req, res) => {
+    try {
+        const { username, password } = req.body || {};
 
-    const ip = req.ip;
+        if (!username || !password) {
+            return res.status(400).json({
+                success: false,
+                message: "Nom d'utilisateur et mot de passe requis."
+            });
+        }
 
-    if (isRateLimited(ip)) {
+        if (
+            username !== process.env.ADMIN_USERNAME
+        ) {
+            return res.status(401).json({
+                success: false,
+                message: "Identifiants incorrects."
+            });
+        }
 
-        return res.status(429).json({
-            success: false,
-            message: "Trop de tentatives. Réessayez dans quelques minutes."
+        const passwordValid = await bcrypt.compare(
+            password,
+            process.env.ADMIN_PASSWORD_HASH
+        );
+
+        if (!passwordValid) {
+            return res.status(401).json({
+                success: false,
+                message: "Identifiants incorrects."
+            });
+        }
+
+        req.session.isAdmin = true;
+        req.session.adminUsername = username;
+
+        await new Promise((resolve, reject) => {
+            req.session.save(error => {
+                if (error) {
+                    reject(error);
+                } else {
+                    resolve();
+                }
+            });
         });
 
-    }
-
-    const { username, password } = req.body;
-
-    if (!username || !password) {
-
-        return res.status(400).json({
-            success: false,
-            message: "Identifiant et mot de passe requis."
+        return res.json({
+            success: true,
+            message: "Connexion réussie."
         });
 
-    }
+    } catch (error) {
+        console.error("Erreur login admin :", error);
 
-    const validUsername = username === process.env.ADMIN_USERNAME;
-
-    const validPassword = validUsername &&
-        await bcrypt.compare(password, process.env.ADMIN_PASSWORD_HASH);
-
-    if (!validUsername || !validPassword) {
-
-        registerFailedAttempt(ip);
-
-        return res.status(401).json({
+        return res.status(500).json({
             success: false,
-            message: "Identifiants invalides."
+            message: "Erreur interne du serveur."
         });
-
     }
-
-    loginAttempts.delete(ip);
-
-    req.session.isAdmin = true;
-
-    req.session.username = username;
-
-    res.json({
-        success: true,
-        message: "Connexion réussie."
-    });
-
 });
 
+/* =========================================================
+   SESSION ADMIN
+========================================================= */
+
+app.get("/api/admin/session", (req, res) => {
+    res.json({
+        success: true,
+        authenticated:
+            req.session &&
+            req.session.isAdmin === true,
+
+        username:
+            req.session &&
+            req.session.isAdmin === true
+                ? req.session.adminUsername
+                : null
+    });
+});
+
+/* =========================================================
+   LOGOUT ADMIN
+========================================================= */
 
 app.post("/api/admin/logout", (req, res) => {
+    req.session.destroy(error => {
+        if (error) {
+            console.error(
+                "Erreur destruction session :",
+                error
+            );
 
-    req.session.destroy(() => {
+            return res.status(500).json({
+                success: false,
+                message: "Impossible de fermer la session."
+            });
+        }
 
         res.clearCookie("rectoy.sid");
 
-        res.json({ success: true });
-
+        return res.json({
+            success: true,
+            message: "Déconnexion réussie."
+        });
     });
-
 });
 
+/* =========================================================
+   CONFIGURATION PUBLICATIONS
+========================================================= */
 
-app.get("/api/admin/session", (req, res) => {
+const ALLOWED_TYPES = [
+    "annonce",
+    "evenement",
+    "publicite"
+];
 
-    res.json({
-        success: true,
-        authenticated: !!(req.session && req.session.isAdmin),
-        username: req.session ? req.session.username : null
-    });
+const ALLOWED_STATUS = [
+    "published",
+    "draft"
+];
 
-});
+const COLUMNS = `
+    id,
+    title,
+    type,
+    description,
+    TO_CHAR(event_date, 'YYYY-MM-DD') AS date,
+    location,
+    link,
+    status,
+    (image_data IS NOT NULL) AS has_image,
+    created_at,
+    updated_at
+`;
 
-
-// ================================
-// MULTER
-// ================================
-
-const ALLOWED_IMAGE_TYPES = {
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp"
-};
-
-const storage = multer.diskStorage({
-
-    destination: function (req, file, cb) {
-
-        cb(null, UPLOADS_DIR);
-
-    },
-
-    filename: function (req, file, cb) {
-
-        // L'extension est déduite du type MIME validé, jamais du nom
-        // original du fichier (évite les extensions forgées : .php, .html...).
-        const extension = ALLOWED_IMAGE_TYPES[file.mimetype];
-
-        const filename =
-            Date.now() +
-            "-" +
-            Math.round(Math.random() * 1E9) +
-            extension;
-
-        cb(null, filename);
-
-    }
-
-});
+/* =========================================================
+   MULTER
+========================================================= */
 
 const upload = multer({
-
-    storage: storage,
+    storage: multer.memoryStorage(),
 
     limits: {
-        fileSize: 5 * 1024 * 1024 // 5 Mo max
+        fileSize: 5 * 1024 * 1024
     },
 
-    fileFilter: function (req, file, cb) {
+    fileFilter(req, file, callback) {
+        const allowed = [
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "image/gif"
+        ];
 
-        if (!ALLOWED_IMAGE_TYPES[file.mimetype]) {
-
-            return cb(
-                new Error("Format d'image non autorisé (JPG, PNG ou WEBP uniquement).")
+        if (!allowed.includes(file.mimetype)) {
+            return callback(
+                new Error(
+                    "Format image non autorisé. Utilisez JPG, PNG, WEBP ou GIF."
+                )
             );
-
         }
 
-        cb(null, true);
-
+        callback(null, true);
     }
-
 });
 
+/* =========================================================
+   PUBLICATIONS : FORMATAGE
+========================================================= */
 
-// ================================
-// OUTILS
-// ================================
+function toPublication(row) {
+    return {
+        id: row.id,
+        title: row.title,
+        type: row.type,
+        description: row.description,
+        date: row.date,
+        location: row.location,
+        link: row.link,
+        status: row.status,
+        has_image: row.has_image,
+        image:
+            row.has_image
+                ? `/api/publications/${row.id}/image?v=${new Date(
+                      row.updated_at
+                  ).getTime()}`
+                : null,
+        created_at: row.created_at,
+        updated_at: row.updated_at
+    };
+}
 
-function readPublications() {
+/* =========================================================
+   PUBLICATIONS PUBLIQUES
+========================================================= */
 
+app.get("/api/publications", async (req, res) => {
     try {
+        const result = await query(`
+            SELECT ${COLUMNS}
+            FROM site_publications
+            WHERE status = 'published'
+            ORDER BY created_at DESC
+        `);
 
-        const data =
-            fs.readFileSync(
-                DATA_FILE,
-                "utf8"
-            );
-
-        return JSON.parse(data || "[]");
+        res.json({
+            success: true,
+            publications: result.rows.map(toPublication)
+        });
 
     } catch (error) {
-
-        return [];
-
-    }
-
-}
-
-
-const ALLOWED_TYPES = ["annonce", "evenement", "publicite"];
-const ALLOWED_STATUS = ["published", "draft"];
-
-// Refuse javascript:, data:, etc. (seuls http/https sont acceptés)
-function isSafeLink(value) {
-    try {
-        const url = new URL(value);
-        return url.protocol === "http:" || url.protocol === "https:";
-    } catch (error) {
-        return false;
-    }
-}
-
-function removeUpload(imagePath) {
-    if (!imagePath || !imagePath.startsWith("/uploads/")) return;
-    fs.unlink(path.join(UPLOADS_DIR, path.basename(imagePath)), () => {});
-}
-
-function reject(req, res, message) {
-    if (req.file) removeUpload("/uploads/" + req.file.filename);
-    return res.status(400).json({ success: false, message });
-}
-
-
-function savePublications(publications) {
-
-    fs.writeFileSync(
-        DATA_FILE,
-        JSON.stringify(
-            publications,
-            null,
-            2
-        )
-    );
-
-}
-
-
-// ================================
-// ROUTE TEST
-// ================================
-
-app.get("/api", (req, res) => {
-
-    res.json({
-        success: true,
-        message: "API RECTOY-AIRES opérationnelle",
-        version: "1.0.0"
-    });
-
-});
-
-
-// ================================
-// GET PUBLICATIONS
-// ================================
-
-app.get("/api/publications", (req, res) => {
-
-    const publications =
-        readPublications();
-
-    const published =
-        publications.filter(
-            publication =>
-                publication.status === "published"
+        console.error(
+            "Erreur GET publications :",
+            error
         );
 
-    res.json({
-        success: true,
-        publications: published
-    });
-
+        res.status(500).json({
+            success: false,
+            message: "Impossible de charger les publications."
+        });
+    }
 });
 
+/* =========================================================
+   IMAGE PUBLICATION
+========================================================= */
 
-// ================================
-// GET TOUTES PUBLICATIONS
-// ADMIN
-// ================================
+app.get(
+    "/api/publications/:id/image",
+    async (req, res) => {
+        try {
+            const id = Number(req.params.id);
 
-app.get("/api/admin/publications", requireAuth, (req, res) => {
+            if (!Number.isInteger(id)) {
+                return res.status(400).end();
+            }
 
-    const publications =
-        readPublications();
+            const result = await query(
+                `
+                SELECT image_data, image_mime
+                FROM site_publications
+                WHERE id = $1
+                `,
+                [id]
+            );
 
-    res.json({
-        success: true,
-        publications
-    });
+            if (
+                result.rowCount === 0 ||
+                !result.rows[0].image_data
+            ) {
+                return res.status(404).end();
+            }
 
-});
+            const row = result.rows[0];
 
+            res.setHeader(
+                "Content-Type",
+                row.image_mime || "image/jpeg"
+            );
 
-// ================================
-// CREER UNE PUBLICATION
-// ================================
+            res.setHeader(
+                "Cache-Control",
+                "public, max-age=86400"
+            );
+
+            return res.send(row.image_data);
+
+        } catch (error) {
+            console.error(
+                "Erreur image publication :",
+                error
+            );
+
+            return res.status(500).end();
+        }
+    }
+);
+
+/* =========================================================
+   ADMIN : LISTE PUBLICATIONS
+========================================================= */
+
+app.get(
+    "/api/admin/publications",
+    requireAuth,
+    async (req, res) => {
+        try {
+            const result = await query(`
+                SELECT ${COLUMNS}
+                FROM site_publications
+                ORDER BY created_at DESC
+            `);
+
+            res.json({
+                success: true,
+                publications: result.rows.map(
+                    toPublication
+                )
+            });
+
+        } catch (error) {
+            console.error(
+                "Erreur ADMIN publications :",
+                error
+            );
+
+            res.status(500).json({
+                success: false,
+                message:
+                    "Impossible de charger les publications."
+            });
+        }
+    }
+);
+
+/* =========================================================
+   ADMIN : CRÉER PUBLICATION
+========================================================= */
 
 app.post(
     "/api/admin/publications",
     requireAuth,
     upload.single("image"),
-    (req, res) => {
-
+    async (req, res) => {
         try {
+            const {
+                title,
+                type,
+                description,
+                date,
+                location,
+                link,
+                status
+            } = req.body;
 
-            const publications =
-                readPublications();
+            if (!title || !type || !description) {
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Titre, type et description sont obligatoires."
+                });
+            }
+
+            if (!ALLOWED_TYPES.includes(type)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Type de publication invalide."
+                });
+            }
+
+            const publicationStatus =
+                status || "published";
+
+            if (
+                !ALLOWED_STATUS.includes(
+                    publicationStatus
+                )
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Statut invalide."
+                });
+            }
+
+            const imageData =
+                req.file?.buffer || null;
+
+            const imageMime =
+                req.file?.mimetype || null;
+
+            const result = await query(
+                `
+                INSERT INTO site_publications
+                (
+                    title,
+                    type,
+                    description,
+                    event_date,
+                    location,
+                    link,
+                    status,
+                    image_data,
+                    image_mime
+                )
+                VALUES
+                (
+                    $1,
+                    $2,
+                    $3,
+                    $4,
+                    $5,
+                    $6,
+                    $7,
+                    $8,
+                    $9
+                )
+                RETURNING ${COLUMNS}
+                `,
+                [
+                    title.trim(),
+                    type,
+                    description.trim(),
+                    date || null,
+                    location?.trim() || null,
+                    link?.trim() || null,
+                    publicationStatus,
+                    imageData,
+                    imageMime
+                ]
+            );
+
+            res.status(201).json({
+                success: true,
+                message:
+                    "Publication créée avec succès.",
+                publication:
+                    toPublication(result.rows[0])
+            });
+
+        } catch (error) {
+            console.error(
+                "Erreur création publication :",
+                error
+            );
+
+            res.status(500).json({
+                success: false,
+                message:
+                    "Impossible de créer la publication."
+            });
+        }
+    }
+);
+
+/* =========================================================
+   ADMIN : MODIFIER PUBLICATION
+========================================================= */
+
+app.put(
+    "/api/admin/publications/:id",
+    requireAuth,
+    upload.single("image"),
+    async (req, res) => {
+        try {
+            const id = Number(req.params.id);
+
+            if (!Number.isInteger(id)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "ID invalide."
+                });
+            }
 
             const {
                 title,
@@ -474,367 +687,300 @@ app.post(
                 status
             } = req.body;
 
-
-            if (!title || !type || !description) {
-
+            if (
+                !title ||
+                !type ||
+                !description
+            ) {
                 return res.status(400).json({
-
                     success: false,
-
                     message:
-                        "Le titre, le type et la description sont obligatoires."
-
+                        "Titre, type et description sont obligatoires."
                 });
-
             }
 
-
-            const allowedTypes = [
-                "annonce",
-                "evenement",
-                "publicite"
-            ];
-
-
-            if (!allowedTypes.includes(type)) {
-
+            if (!ALLOWED_TYPES.includes(type)) {
                 return res.status(400).json({
-
                     success: false,
-
-                    message:
-                        "Type de publication invalide."
-
+                    message: "Type invalide."
                 });
-
             }
 
+            const publicationStatus =
+                status || "published";
 
-            if (link && !isSafeLink(link)) {
-                return reject(req, res, "Le lien doit commencer par http:// ou https://");
+            if (
+                !ALLOWED_STATUS.includes(
+                    publicationStatus
+                )
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Statut invalide."
+                });
             }
 
-            let image = null;
-
+            let result;
 
             if (req.file) {
-
-                image =
-                    `/uploads/${req.file.filename}`;
-
+                result = await query(
+                    `
+                    UPDATE site_publications
+                    SET
+                        title = $1,
+                        type = $2,
+                        description = $3,
+                        event_date = $4,
+                        location = $5,
+                        link = $6,
+                        status = $7,
+                        image_data = $8,
+                        image_mime = $9
+                    WHERE id = $10
+                    RETURNING ${COLUMNS}
+                    `,
+                    [
+                        title.trim(),
+                        type,
+                        description.trim(),
+                        date || null,
+                        location?.trim() || null,
+                        link?.trim() || null,
+                        publicationStatus,
+                        req.file.buffer,
+                        req.file.mimetype,
+                        id
+                    ]
+                );
+            } else {
+                result = await query(
+                    `
+                    UPDATE site_publications
+                    SET
+                        title = $1,
+                        type = $2,
+                        description = $3,
+                        event_date = $4,
+                        location = $5,
+                        link = $6,
+                        status = $7
+                    WHERE id = $8
+                    RETURNING ${COLUMNS}
+                    `,
+                    [
+                        title.trim(),
+                        type,
+                        description.trim(),
+                        date || null,
+                        location?.trim() || null,
+                        link?.trim() || null,
+                        publicationStatus,
+                        id
+                    ]
+                );
             }
 
-
-            const publication = {
-
-                id:
-                    Date.now().toString(),
-
-                title,
-
-                type,
-
-                description,
-
-                date:
-                    date || null,
-
-                location:
-                    location || null,
-
-                link:
-                    link || null,
-
-                image,
-
-                status:
-                    ALLOWED_STATUS.includes(status) ? status : "published",
-
-                createdAt:
-                    new Date().toISOString()
-
-            };
-
-
-            publications.unshift(
-                publication
-            );
-
-
-            savePublications(
-                publications
-            );
-
-
-            res.status(201).json({
-
-                success: true,
-
-                message:
-                    "Publication créée avec succès.",
-
-                publication
-
-            });
-
-
-        } catch (error) {
-
-            console.error(error);
-
-            res.status(500).json({
-
-                success: false,
-
-                message:
-                    "Erreur lors de la création."
-
-            });
-
-        }
-
-    }
-);
-
-
-// ================================
-// MODIFIER
-// ================================
-
-app.put(
-    "/api/admin/publications/:id",
-    requireAuth,
-    upload.single("image"),
-    (req, res) => {
-
-        try {
-
-            const publications =
-                readPublications();
-
-            const index =
-                publications.findIndex(
-                    publication =>
-                        publication.id === req.params.id
-                );
-
-
-            if (index === -1) {
-
+            if (result.rowCount === 0) {
                 return res.status(404).json({
-
                     success: false,
-
                     message:
                         "Publication introuvable."
-
                 });
-
             }
-
-
-            const publication =
-                publications[index];
-
-
-            if (req.body.type !== undefined && !ALLOWED_TYPES.includes(req.body.type)) {
-                return reject(req, res, "Type de publication invalide.");
-            }
-            if (req.body.status !== undefined && !ALLOWED_STATUS.includes(req.body.status)) {
-                return reject(req, res, "Statut invalide.");
-            }
-            if (req.body.link && !isSafeLink(req.body.link)) {
-                return reject(req, res, "Le lien doit commencer par http:// ou https://");
-            }
-
-
-            publication.title =
-                req.body.title ??
-                publication.title;
-
-            publication.type =
-                req.body.type ??
-                publication.type;
-
-            publication.description =
-                req.body.description ??
-                publication.description;
-
-            publication.date =
-                req.body.date ??
-                publication.date;
-
-            publication.location =
-                req.body.location ??
-                publication.location;
-
-            publication.link =
-                req.body.link ??
-                publication.link;
-
-            publication.status =
-                req.body.status ??
-                publication.status;
-
-
-            if (req.file) {
-
-                removeUpload(publication.image);
-
-                publication.image =
-                    `/uploads/${req.file.filename}`;
-
-            }
-
-
-            publication.updatedAt =
-                new Date().toISOString();
-
-
-            publications[index] =
-                publication;
-
-
-            savePublications(
-                publications
-            );
-
 
             res.json({
-
                 success: true,
-
                 message:
-                    "Publication modifiée.",
-
-                publication
-
+                    "Publication modifiée avec succès.",
+                publication:
+                    toPublication(result.rows[0])
             });
-
 
         } catch (error) {
-
-            console.error(error);
+            console.error(
+                "Erreur modification publication :",
+                error
+            );
 
             res.status(500).json({
-
                 success: false,
-
                 message:
-                    "Erreur lors de la modification."
-
+                    "Impossible de modifier la publication."
             });
-
         }
-
     }
 );
 
-
-// ================================
-// SUPPRIMER
-// ================================
+/* =========================================================
+   ADMIN : SUPPRIMER PUBLICATION
+========================================================= */
 
 app.delete(
     "/api/admin/publications/:id",
     requireAuth,
-    (req, res) => {
+    async (req, res) => {
+        try {
+            const id = Number(req.params.id);
 
-        const publications =
-            readPublications();
+            if (!Number.isInteger(id)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "ID invalide."
+                });
+            }
 
-        const index =
-            publications.findIndex(
-                publication =>
-                    publication.id === req.params.id
+            const result = await query(
+                `
+                DELETE FROM site_publications
+                WHERE id = $1
+                RETURNING id
+                `,
+                [id]
             );
 
+            if (result.rowCount === 0) {
+                return res.status(404).json({
+                    success: false,
+                    message:
+                        "Publication introuvable."
+                });
+            }
 
-        if (index === -1) {
-
-            return res.status(404).json({
-
-                success: false,
-
+            res.json({
+                success: true,
                 message:
-                    "Publication introuvable."
-
+                    "Publication supprimée avec succès."
             });
 
+        } catch (error) {
+            console.error(
+                "Erreur suppression publication :",
+                error
+            );
+
+            res.status(500).json({
+                success: false,
+                message:
+                    "Impossible de supprimer la publication."
+            });
         }
-
-
-        const [removed] = publications.splice(index, 1);
-
-        removeUpload(removed.image);
-
-
-        savePublications(
-            publications
-        );
-
-
-        res.json({
-
-            success: true,
-
-            message:
-                "Publication supprimée."
-
-        });
-
     }
 );
 
-
-// ================================
-// GESTION D'ERREURS GLOBALE
-// (fichiers trop lourds, type invalide, origine CORS refusée...)
-// ================================
+/* =========================================================
+   GESTION DES ERREURS MULTER
+========================================================= */
 
 app.use((error, req, res, next) => {
-
-    if (error instanceof multer.MulterError || error) {
-
-        console.error(error.message);
-
+    if (error instanceof multer.MulterError) {
         return res.status(400).json({
             success: false,
-            message: error.message || "Requête invalide."
+            message:
+                "Erreur upload : " + error.message
         });
-
     }
 
-    next();
+    if (
+        error &&
+        error.message &&
+        error.message.includes(
+            "Format image non autorisé"
+        )
+    ) {
+        return res.status(400).json({
+            success: false,
+            message: error.message
+        });
+    }
 
+    next(error);
 });
 
+/* =========================================================
+   404 API
+========================================================= */
 
-// ================================
-// DEMARRAGE
-// ================================
+app.use("/api", (req, res) => {
+    res.status(404).json({
+        success: false,
+        message: "Route API introuvable."
+    });
+});
 
-app.listen(
-    PORT,
-    () => {
+/* =========================================================
+   ERREUR GLOBALE
+========================================================= */
 
-        console.log("");
-        console.log(
-            "================================"
-        );
-        console.log(
-            " RECTOY-AIRES BACKEND"
-        );
-        console.log(
-            "================================"
-        );
-        console.log(
-            `API : http://localhost:${PORT}`
-        );
-        console.log(
-            "================================"
-        );
-        console.log("");
+app.use((error, req, res, next) => {
+    console.error(
+        "ERREUR SERVEUR :",
+        error
+    );
 
+    if (res.headersSent) {
+        return next(error);
     }
-);
+
+    res.status(500).json({
+        success: false,
+        message: "Erreur interne du serveur."
+    });
+});
+
+/* =========================================================
+   DÉMARRAGE
+========================================================= */
+
+(async () => {
+    try {
+        console.log("");
+        console.log("================================");
+        console.log(" RECTOY-AIRES");
+        console.log(" Initialisation du serveur");
+        console.log("================================");
+
+        await migrate();
+
+        console.log("");
+        console.log(
+            "Base de données : CONNECTÉE"
+        );
+
+        app.listen(PORT, () => {
+            console.log("");
+            console.log("================================");
+            console.log(" RECTOY-AIRES BACKEND");
+            console.log("================================");
+            console.log(
+                `Site  : http://localhost:${PORT}`
+            );
+            console.log(
+                `Admin : http://localhost:${PORT}/admin/`
+            );
+            console.log(
+                `API   : http://localhost:${PORT}/api`
+            );
+            console.log(
+                `Health: http://localhost:${PORT}/healthz`
+            );
+            console.log("================================");
+            console.log("");
+        });
+
+    } catch (error) {
+        console.error("");
+        console.error(
+            "================================"
+        );
+        console.error(
+            " ERREUR DÉMARRAGE RECTOY-AIRES"
+        );
+        console.error(
+            "================================"
+        );
+        console.error(error);
+        console.error("");
+
+        process.exit(1);
+    }
+})();

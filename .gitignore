@@ -2,3 +2,17 @@ node_modules/
 .env
 data/
 uploads/
+
+# Sauvegardes locales
+*.backup
+*.backup-*
+server.backup.js
+public/index (1).html
+test-database.js
+src/config/database.js.backup-avant-render
+
+# Secrets
+.env
+.env.*
+!.env.example
+
